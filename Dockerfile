@@ -71,7 +71,7 @@ USER renderer
 # Configure renderd
 USER root
 RUN sed -i 's/renderaccount/renderer/g' /usr/local/etc/renderd.conf
-RUN sed -i 's/hot/tile/g' /usr/local/etc/renderd.conf
+#RUN sed -i 's/hot/tile/g' /usr/local/etc/renderd.conf
 USER renderer
 
 # Configure Apache
