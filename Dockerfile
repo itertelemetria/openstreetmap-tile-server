@@ -1,5 +1,5 @@
-FROM ubuntu:18.10
-
+FROM ubuntu:18.04
+ARG PBF_URL
 # Based on
 # https://switch2osm.org/manually-building-a-tile-server-18-04-lts/
 
@@ -53,7 +53,8 @@ WORKDIR /home/renderer/src
 RUN git clone https://github.com/gravitystorm/openstreetmap-carto.git
 WORKDIR /home/renderer/src/openstreetmap-carto
 USER root
-RUN apt-get install -y npm nodejs
+RUN apt-get install nodejs-dev node-gyp libssl1.0-dev -y
+RUN apt-get install -y npm
 RUN npm install -g carto
 USER renderer
 RUN carto -v
@@ -94,5 +95,17 @@ USER renderer
 USER root
 RUN apt-get install -y sudo
 COPY run.sh /
+# Initialize PostgreSQL
+RUN service postgresql start
+RUN sudo -u postgres createuser renderer
+RUN sudo -u postgres createdb -E UTF8 -O renderer gis
+RUN sudo -u postgres psql -d gis -c "CREATE EXTENSION postgis;"
+RUN sudo -u postgres psql -d gis -c "CREATE EXTENSION hstore;"
+RUN sudo -u postgres psql -d gis -c "ALTER TABLE geometry_columns OWNER TO renderer;"
+RUN sudo -u postgres psql -d gis -c "ALTER TABLE spatial_ref_sys OWNER TO renderer;"
+
+RUN wget -nv ${PBF_URL} -O /data.osm.pbf
+RUN sudo -u renderer osm2pgsql -d gis --create --slim -G --hstore --tag-transform-script /home/renderer/src/openstreetmap-carto/openstreetmap-carto.lua -C 2048 --number-processes ${THREADS:-4} -S /home/renderer/src/openstreetmap-carto/openstreetmap-carto.style /data.osm.pbf
+
 ENTRYPOINT ["/run.sh"]
 CMD []
