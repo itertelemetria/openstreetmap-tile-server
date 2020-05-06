@@ -1,111 +1,183 @@
 FROM ubuntu:18.04
-ARG PBF_URL
+
 # Based on
 # https://switch2osm.org/manually-building-a-tile-server-18-04-lts/
 
-# Install dependencies
-RUN apt-get update
-RUN apt-get install -y libboost-all-dev git-core tar unzip wget bzip2 build-essential autoconf libtool libxml2-dev libgeos-dev libgeos++-dev libpq-dev libbz2-dev libproj-dev munin-node munin libprotobuf-c0-dev protobuf-c-compiler libfreetype6-dev libtiff5-dev libicu-dev libgdal-dev libcairo-dev libcairomm-1.0-dev apache2 apache2-dev libagg-dev liblua5.2-dev ttf-unifont lua5.1 liblua5.1-dev libgeotiff-epsg
-
-# Set up environment and renderer user
+# Set up environment
 ENV TZ=UTC
+ENV AUTOVACUUM=on
+ENV UPDATES=disabled
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+# Install dependencies
+RUN apt-get update \
+  && apt-get install wget gnupg2 lsb-core -y \
+  && wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+  && echo "deb [ trusted=yes ] http://apt.postgresql.org/pub/repos/apt/ `lsb_release -cs`-pgdg main" | tee /etc/apt/sources.list.d/pgdg.list \
+  && apt-get update \
+  && apt-get install -y apt-transport-https ca-certificates 
+
+RUN apt-get install -y curl \
+  && wget --quiet -O - https://deb.nodesource.com/setup_10.x | bash - \
+  && apt-get install -y nodejs
+
+RUN apt-get install -y --no-install-recommends --allow-unauthenticated \
+  apache2 \
+  apache2-dev \
+  autoconf \
+  build-essential \
+  bzip2 \
+  cmake \
+  cron \
+  fonts-noto-cjk \
+  fonts-noto-hinted \
+  fonts-noto-unhinted \
+  gcc \
+  gdal-bin \
+  git-core \
+  libagg-dev \
+  libboost-filesystem-dev \
+  libboost-system-dev \
+  libbz2-dev \
+  libcairo-dev \
+  libcairomm-1.0-dev \
+  libexpat1-dev \
+  libfreetype6-dev \
+  libgdal-dev \
+  libgeos++-dev \
+  libgeos-dev \
+  libgeotiff-epsg \
+  libicu-dev \
+  liblua5.3-dev \
+  libmapnik-dev \
+  libpq-dev \
+  libproj-dev \
+  libprotobuf-c0-dev \
+  libtiff5-dev \
+  libtool \
+  libxml2-dev \
+  lua5.3 \
+  make \
+  mapnik-utils \
+  node-gyp \
+  osmium-tool \
+  osmosis \
+  postgis \
+  postgresql-12 \
+  postgresql-contrib-12 \
+  postgresql-server-dev-12 \
+  protobuf-c-compiler \
+  python3-mapnik \
+  python3-lxml \
+  python3-psycopg2 \
+  python3-shapely \
+  sudo \
+  tar \
+  ttf-unifont \
+  unzip \
+  wget \
+  zlib1g-dev \
+&& apt-get clean autoclean \
+&& apt-get autoremove --yes \
+&& rm -rf /var/lib/{apt,dpkg,cache,log}/
+
+# Set up PostGIS
+RUN wget http://download.osgeo.org/postgis/source/postgis-3.0.0.tar.gz -O postgis.tar.gz \
+ && mkdir -p postgis_src \
+ && tar -xvzf postgis.tar.gz --strip 1 -C postgis_src \
+ && rm postgis.tar.gz \
+ && cd postgis_src \
+ && ./configure && make && make install \
+ && cd .. && rm -rf postgis_src
+
+# Set up renderer user
 RUN adduser --disabled-password --gecos "" renderer
-USER renderer
 
 # Install latest osm2pgsql
-RUN mkdir /home/renderer/src
-WORKDIR /home/renderer/src
-RUN git clone https://github.com/openstreetmap/osm2pgsql.git
-WORKDIR /home/renderer/src/osm2pgsql
-USER root
-RUN apt-get install -y make cmake g++ libboost-dev libboost-system-dev libboost-filesystem-dev libexpat1-dev zlib1g-dev libbz2-dev libpq-dev libgeos-dev libgeos++-dev libproj-dev lua5.2 liblua5.2-dev
-USER renderer
-RUN mkdir build
-WORKDIR /home/renderer/src/osm2pgsql/build
-RUN cmake ..
-RUN make
-USER root
-RUN make install
-USER renderer
-
-# Install and test Mapnik
-USER root
-RUN apt-get -y install autoconf apache2-dev libtool libxml2-dev libbz2-dev libgeos-dev libgeos++-dev libproj-dev gdal-bin libmapnik-dev mapnik-utils python-mapnik
-USER renderer
-RUN python -c 'import mapnik'
+RUN mkdir -p /home/renderer/src \
+ && cd /home/renderer/src \
+ && git clone https://github.com/openstreetmap/osm2pgsql.git \
+ && cd /home/renderer/src/osm2pgsql \
+ && rm -rf .git \
+ && mkdir build \
+ && cd build \
+ && cmake .. \
+ && make -j $(nproc) \
+ && make install \
+ && mkdir /nodes \
+ && chown renderer:renderer /nodes \
+ && rm -rf /home/renderer/src/osm2pgsql
 
 # Install mod_tile and renderd
-WORKDIR /home/renderer/src
-RUN git clone -b switch2osm https://github.com/SomeoneElseOSM/mod_tile.git
-WORKDIR /home/renderer/src/mod_tile
-RUN ./autogen.sh
-RUN ./configure
-RUN make
-USER root
-RUN make install
-RUN make install-mod_tile
-RUN ldconfig
-USER renderer
+RUN mkdir -p /home/renderer/src \
+ && cd /home/renderer/src \
+ && git clone -b switch2osm https://github.com/SomeoneElseOSM/mod_tile.git \
+ && cd mod_tile \
+ && ./autogen.sh \
+ && ./configure \
+ && make -j $(nproc) \
+ && make -j $(nproc) install \
+ && make -j $(nproc) install-mod_tile \
+ && ldconfig \
+ && cd ..
 
 # Configure stylesheet
-WORKDIR /home/renderer/src
-RUN git clone https://github.com/gravitystorm/openstreetmap-carto.git
-WORKDIR /home/renderer/src/openstreetmap-carto
-USER root
-RUN apt-get install nodejs-dev node-gyp libssl1.0-dev -y
-RUN apt-get install -y npm
-RUN npm install -g carto
-USER renderer
-RUN carto -v
-RUN carto project.mml > mapnik.xml
-
-# Load shapefiles
-WORKDIR /home/renderer/src/openstreetmap-carto
-RUN scripts/get-shapefiles.py
-
-# Install fonts
-USER root
-RUN apt-get install -y fonts-noto-cjk fonts-noto-hinted fonts-noto-unhinted ttf-unifont
-USER renderer
+RUN mkdir -p /home/renderer/src \
+ && cd /home/renderer/src \
+ && git clone https://github.com/gravitystorm/openstreetmap-carto.git \
+ && git -C openstreetmap-carto checkout v4.23.0 \
+ && cd openstreetmap-carto \
+ && rm -rf .git \
+ && npm install -g carto@0.18.2 \
+ && carto project.mml > mapnik.xml \
+ && scripts/get-shapefiles.py \
+ && rm /home/renderer/src/openstreetmap-carto/data/*.zip
 
 # Configure renderd
-USER root
-RUN sed -i 's/renderaccount/renderer/g' /usr/local/etc/renderd.conf
-#RUN sed -i 's/hot/tile/g' /usr/local/etc/renderd.conf
-USER renderer
+RUN sed -i 's/renderaccount/renderer/g' /usr/local/etc/renderd.conf \
+ && sed -i 's/hot/tile/g' /usr/local/etc/renderd.conf
 
 # Configure Apache
-USER root
-RUN mkdir /var/lib/mod_tile
-RUN chown renderer /var/lib/mod_tile
-RUN mkdir /var/run/renderd
-RUN chown renderer /var/run/renderd
-RUN echo "LoadModule tile_module /usr/lib/apache2/modules/mod_tile.so" >> /etc/apache2/conf-available/mod_tile.conf
-RUN a2enconf mod_tile
+RUN mkdir /var/lib/mod_tile \
+ && chown renderer /var/lib/mod_tile \
+ && mkdir /var/run/renderd \
+ && chown renderer /var/run/renderd \
+ && echo "LoadModule tile_module /usr/lib/apache2/modules/mod_tile.so" >> /etc/apache2/conf-available/mod_tile.conf \
+ && echo "LoadModule headers_module /usr/lib/apache2/modules/mod_headers.so" >> /etc/apache2/conf-available/mod_headers.conf \
+ && a2enconf mod_tile && a2enconf mod_headers
 COPY apache.conf /etc/apache2/sites-available/000-default.conf
-USER renderer
+COPY leaflet-demo.html /var/www/html/index.html
+RUN ln -sf /dev/stdout /var/log/apache2/access.log \
+ && ln -sf /dev/stderr /var/log/apache2/error.log
 
-# Install PostgreSQL
-USER root
-RUN apt-get install -y postgresql postgresql-contrib postgis postgresql-10-postgis-2.4
-USER renderer
+# Configure PosgtreSQL
+COPY postgresql.custom.conf.tmpl /etc/postgresql/12/main/
+RUN chown -R postgres:postgres /var/lib/postgresql \
+ && chown postgres:postgres /etc/postgresql/12/main/postgresql.custom.conf.tmpl \
+ && echo "host all all 0.0.0.0/0 md5" >> /etc/postgresql/12/main/pg_hba.conf \
+ && echo "host all all ::/0 md5" >> /etc/postgresql/12/main/pg_hba.conf
+
+# Copy update scripts
+COPY openstreetmap-tiles-update-expire /usr/bin/
+RUN chmod +x /usr/bin/openstreetmap-tiles-update-expire \
+ && mkdir /var/log/tiles \
+ && chmod a+rw /var/log/tiles \
+ && ln -s /home/renderer/src/mod_tile/osmosis-db_replag /usr/bin/osmosis-db_replag \
+ && echo "*  *    * * *   renderer    openstreetmap-tiles-update-expire\n" >> /etc/crontab
+
+# Install trim_osc.py helper script
+RUN mkdir -p /home/renderer/src \
+ && cd /home/renderer/src \
+ && git clone https://github.com/zverik/regional \
+ && cd regional \
+ && git checkout 612fe3e040d8bb70d2ab3b133f3b2cfc6c940520 \
+ && rm -rf .git \
+ && chmod u+x /home/renderer/src/regional/trim_osc.py
 
 # Start running
-USER root
-RUN apt-get install -y sudo
 COPY run.sh /
-# Initialize PostgreSQL
-RUN service postgresql start
-RUN sudo -u postgres createuser renderer
-RUN sudo -u postgres createdb -E UTF8 -O renderer gis
-RUN sudo -u postgres psql -d gis -c "CREATE EXTENSION postgis;"
-RUN sudo -u postgres psql -d gis -c "CREATE EXTENSION hstore;"
-RUN sudo -u postgres psql -d gis -c "ALTER TABLE geometry_columns OWNER TO renderer;"
-RUN sudo -u postgres psql -d gis -c "ALTER TABLE spatial_ref_sys OWNER TO renderer;"
-
-RUN wget -nv ${PBF_URL} -O /data.osm.pbf
-RUN sudo -u renderer osm2pgsql -d gis --create --slim -G --hstore --tag-transform-script /home/renderer/src/openstreetmap-carto/openstreetmap-carto.lua -C 2048 --number-processes ${THREADS:-4} -S /home/renderer/src/openstreetmap-carto/openstreetmap-carto.style /data.osm.pbf
-
+COPY indexes.sql /
 ENTRYPOINT ["/run.sh"]
 CMD []
+
+EXPOSE 80 5432
